@@ -1,3 +1,8 @@
+export const config = {
+  supportsResponseStreaming: true,
+  maxDuration: 60,
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -21,19 +26,38 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
         max_tokens: Math.min(max_tokens, 8000),
+        stream: true,
         system,
         messages: [{ role: "user", content: user }],
       }),
     });
 
-    const data = await response.json();
-
     if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || "API error" });
+      const errData = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: errData.error?.message || "API error " + response.status });
     }
 
-    return res.status(200).json(data);
+    // Set headers for streaming
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    // Pipe the stream from Anthropic to the client
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      res.write(chunk);
+    }
+
+    res.end();
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.end();
   }
 }
