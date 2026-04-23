@@ -230,7 +230,7 @@ async function callClaude(systemPrompt, userPrompt) {
     body: JSON.stringify({
       system: systemPrompt + "\n\nCRITICAL: Keep string values concise (1-2 sentences max per field). Ensure your entire JSON response is complete and valid. Do NOT let any string exceed 200 characters. Prioritize completing the JSON structure over verbosity.",
       user: userPrompt,
-      max_tokens: 16000,
+      max_tokens: 8000,
     }),
   });
 
@@ -239,9 +239,36 @@ async function callClaude(systemPrompt, userPrompt) {
     throw new Error(err.error || "API request failed with status " + resp.status);
   }
 
-  const data = await resp.json();
-  const text = data.content?.map(c => c.text || "").join("\n") || "";
-  let cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+  // Read the SSE stream and extract text content
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+
+    // Parse SSE events from the chunk
+    const lines = chunk.split("\n");
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data);
+          // Extract text from content_block_delta events
+          if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+            fullText += parsed.delta.text;
+          }
+        } catch (e) {
+          // Skip unparseable lines
+        }
+      }
+    }
+  }
+
+  let cleaned = fullText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
 
   try { return JSON.parse(cleaned); } catch (e) { /* attempt repair */ }
 
